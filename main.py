@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from openai import ChatCompletion  # Import ChatCompletion directly
+from openai.api_resources.chat_completion import ChatCompletion  # Import directly from lower-level module
 
 app = FastAPI()
 
@@ -15,13 +15,13 @@ logging.info(f"Using openai package version: {openai.__version__}")
 # Configure CORS: temporarily allow all origins for testing purposes.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For testing; update to your specific domain for production.
+    allow_origins=["*"],  # For testing; update for production.
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Set your OpenAI API key from environment variables.
+# Set the OpenAI API key from environment variables.
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a successful CEO giving business advice.")
 
@@ -46,7 +46,7 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
-        # Log the acreate method from the directly imported ChatCompletion
+        # Log the acreate method from the directly imported ChatCompletion.
         logging.info("Using method: " + str(ChatCompletion.acreate))
         # Use the new async interface via the directly imported ChatCompletion.
         response = await ChatCompletion.acreate(
