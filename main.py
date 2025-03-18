@@ -10,16 +10,16 @@ app = FastAPI()
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
-# Configure CORS: temporarily allow all origins for testing purposes.
+# Configure CORS: temporarily allow all origins for testing.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For testing; update to your specific domain for production.
+    allow_origins=["*"],  # Update to your specific domain for production.
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Retrieve the OpenAI API key and optional system prompt from environment variables.
+# Set your OpenAI API key from environment variables.
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a successful CEO giving business advice.")
 
@@ -30,7 +30,7 @@ class ChatRequest(BaseModel):
 async def health():
     return {"status": "ok"}
 
-# Explicitly handle OPTIONS requests for the /chat endpoint.
+# Explicitly handle OPTIONS requests for /chat.
 @app.options("/chat")
 async def options_chat():
     return {}
@@ -44,7 +44,7 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
-        # Use the new async API for chat completions.
+        # Use the new async interface for chat completions.
         response = await openai.ChatCompletion.acreate(
             model="gpt-4",
             messages=[
@@ -52,6 +52,7 @@ async def chat(request: ChatRequest):
                 {"role": "user", "content": request.message}
             ]
         )
+        # Access the response content.
         ai_response = response['choices'][0]['message']['content']
         logging.info("Response sent")
         return {"response": ai_response}
