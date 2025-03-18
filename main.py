@@ -14,7 +14,7 @@ logging.info(f"Using openai package version: {openai.__version__}")
 # Configure CORS: temporarily allow all origins for testing purposes.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For testing; update to your specific domain for production.
+    allow_origins=["*"],  # Update this for production.
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
@@ -45,7 +45,9 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
-        # Use the new async interface for chat completions.
+        # Debug: confirm we're accessing the acreate method.
+        logging.info("Using method: " + str(openai.ChatCompletion.acreate))
+        # Call the new async interface for chat completions.
         response = await openai.ChatCompletion.acreate(
             model="gpt-4",
             messages=[
