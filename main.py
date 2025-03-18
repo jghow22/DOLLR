@@ -44,6 +44,9 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
+        # The following call works with openai==0.28.
+        # If you're using openai>=1.0.0, either run `openai migrate` to update this code
+        # or pin your openai version to 0.28.
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
