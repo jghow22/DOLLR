@@ -10,15 +10,16 @@ app = FastAPI()
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
-# Update CORS: replace "*" with your Wix site domain in production.
+# Configure CORS: temporarily allow all origins for testing purposes.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://yourwixsite.com"],
+    allow_origins=["*"],  # For testing; update to your specific domain for production.
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
+# Retrieve the OpenAI API key and optional system prompt from environment variables.
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a successful CEO giving business advice.")
 
@@ -29,10 +30,18 @@ class ChatRequest(BaseModel):
 async def health():
     return {"status": "ok"}
 
+# Explicitly handle OPTIONS requests for the /chat endpoint.
+@app.options("/chat")
+async def options_chat():
+    return {}
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     if not openai.api_key:
-        raise HTTPException(status_code=500, detail="OpenAI API key is missing. Check environment variables.")
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI API key is missing. Please check your environment variables."
+        )
     try:
         logging.info(f"Received message: {request.message}")
         response = openai.ChatCompletion.create(
