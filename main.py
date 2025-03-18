@@ -9,11 +9,12 @@ app = FastAPI()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
+logging.info(f"Using openai package version: {openai.__version__}")
 
-# Configure CORS: temporarily allow all origins for testing.
+# Configure CORS: temporarily allow all origins for testing purposes.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update to your specific domain for production.
+    allow_origins=["*"],  # For testing; update to your specific domain for production.
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
@@ -52,7 +53,6 @@ async def chat(request: ChatRequest):
                 {"role": "user", "content": request.message}
             ]
         )
-        # Access the response content.
         ai_response = response['choices'][0]['message']['content']
         logging.info("Response sent")
         return {"response": ai_response}
