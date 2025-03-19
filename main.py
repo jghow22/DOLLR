@@ -12,7 +12,7 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logging.info(f"Using openai package version: {openai.__version__}")
 
-# Attempt to unwrap ChatCompletion if it is wrapped by APIRemovedInV1Proxy.
+# Attempt to unwrap ChatCompletion
 try:
     ChatCompletion = openai.ChatCompletion.__wrapped__
     logging.info("Successfully unwrapped ChatCompletion.")
@@ -23,7 +23,7 @@ except AttributeError:
 # Configure CORS (update allow_origins for production).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # For testing; update to your actual domain for production.
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
@@ -53,8 +53,7 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
-        logging.info("Using method: " + str(ChatCompletion.acreate))
-        # Call the async API (using the unwrapped ChatCompletion if available)
+        # Call the async API (using the unwrapped ChatCompletion)
         response = await ChatCompletion.acreate(
             model="gpt-4",
             messages=[
@@ -62,8 +61,11 @@ async def chat(request: ChatRequest):
                 {"role": "user", "content": request.message}
             ]
         )
-        ai_response = response["choices"][0]["message"]["content"]
-        logging.info("Response sent")
+        logging.info("Full ChatCompletion response: " + str(response))
+        ai_response = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if ai_response is None:
+            ai_response = ""
+        logging.info("Response sent: " + ai_response)
         return {"response": ai_response}
     except Exception as e:
         logging.error(f"Error in chat endpoint: {str(e)}")
