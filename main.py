@@ -12,16 +12,24 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logging.info(f"Using openai package version: {openai.__version__}")
 
-# Configure CORS: allow all origins for testing.
+# Attempt to unwrap ChatCompletion if it is wrapped by APIRemovedInV1Proxy.
+try:
+    ChatCompletion = openai.ChatCompletion.__wrapped__
+    logging.info("Successfully unwrapped ChatCompletion.")
+except AttributeError:
+    ChatCompletion = openai.ChatCompletion
+    logging.info("Could not unwrap ChatCompletion; using as is.")
+
+# Configure CORS (update allow_origins for production).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change this for production.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Set OpenAI API key from environment variables.
+# Set OpenAI API key and system prompt from environment variables.
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a successful CEO giving business advice.")
 
@@ -45,15 +53,14 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
-        # Wrap the synchronous call in asyncio.to_thread so it doesn't block the event loop.
-        response = await asyncio.to_thread(
-            lambda: openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": request.message}
-                ]
-            )
+        logging.info("Using method: " + str(ChatCompletion.acreate))
+        # Call the async API (using the unwrapped ChatCompletion if available)
+        response = await ChatCompletion.acreate(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": request.message}
+            ]
         )
         ai_response = response["choices"][0]["message"]["content"]
         logging.info("Response sent")
