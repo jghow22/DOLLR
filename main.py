@@ -1,10 +1,10 @@
 import os
 import openai
+import asyncio
 import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from openai.api_resources.chat_completion import ChatCompletion  # Import directly from lower-level module
 
 app = FastAPI()
 
@@ -12,16 +12,16 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logging.info(f"Using openai package version: {openai.__version__}")
 
-# Configure CORS: temporarily allow all origins for testing purposes.
+# Configure CORS: allow all origins for testing.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For testing; update for production.
+    allow_origins=["*"],  # Change this for production.
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Set the OpenAI API key from environment variables.
+# Set OpenAI API key from environment variables.
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a successful CEO giving business advice.")
 
@@ -32,7 +32,6 @@ class ChatRequest(BaseModel):
 async def health():
     return {"status": "ok"}
 
-# Explicitly handle OPTIONS requests for /chat.
 @app.options("/chat")
 async def options_chat():
     return {}
@@ -46,17 +45,17 @@ async def chat(request: ChatRequest):
         )
     try:
         logging.info(f"Received message: {request.message}")
-        # Log the acreate method from the directly imported ChatCompletion.
-        logging.info("Using method: " + str(ChatCompletion.acreate))
-        # Use the new async interface via the directly imported ChatCompletion.
-        response = await ChatCompletion.acreate(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": request.message}
-            ]
+        # Wrap the synchronous call in asyncio.to_thread so it doesn't block the event loop.
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": request.message}
+                ]
+            )
         )
-        ai_response = response['choices'][0]['message']['content']
+        ai_response = response["choices"][0]["message"]["content"]
         logging.info("Response sent")
         return {"response": ai_response}
     except Exception as e:
