@@ -23,18 +23,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Set OpenAI API key and system prompt from environment variables
+# Set OpenAI API key and system prompt from environment variables.
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a successful CEO giving business advice.")
 
 # Global in-memory dictionary to store session history.
-# Each session_id maps to a list of messages, where each message is a dict with "role" and "content"
+# Each session_id maps to a list of messages (each message is a dict with "role" and "content")
 session_history: Dict[str, List[Dict[str, str]]] = {}
 
 # Chat request model now includes an optional session_id.
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+
+def generate_session_title(messages: List[Dict[str, str]]) -> str:
+    """
+    Generate a short title for a session based on the first user message.
+    If no user message is found, returns "Untitled Session".
+    """
+    for msg in messages:
+        if msg["role"] == "user":
+            words = msg["content"].split()
+            if words:
+                # Use the first 3 words as the title.
+                return " ".join(words[:3])
+    return "Untitled Session"
 
 @app.get("/health")
 async def health():
@@ -85,13 +98,14 @@ async def chat(request: ChatRequest):
         logging.error(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-# Endpoint to list all sessions with a brief preview (using the last message in each session)
+# Endpoint to list all sessions with a title and preview.
 @app.get("/sessions")
 async def get_sessions():
     sessions = []
     for session_id, messages in session_history.items():
+        title = generate_session_title(messages)
         preview = messages[-1]["content"] if messages else ""
-        sessions.append({"session_id": session_id, "preview": preview})
+        sessions.append({"session_id": session_id, "title": title, "preview": preview})
     return {"sessions": sessions}
 
 # Endpoint to retrieve the full conversation for a specific session.
