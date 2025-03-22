@@ -115,3 +115,31 @@ async def get_session(session_id: str):
         return {"session_id": session_id, "messages": session_history[session_id]}
     else:
         raise HTTPException(status_code=404, detail="Session not found")
+
+        # Append the assistant's response to the session history.
+        session_history[session_id].append({"role": "assistant", "content": ai_response})
+        logging.info(f"Session {session_id} - Response sent: {ai_response}")
+        
+        # Return the session id along with the reply.
+        return {"session_id": session_id, "response": ai_response}
+    except Exception as e:
+        logging.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+# Endpoint to list all sessions with a title and preview.
+@app.get("/sessions")
+async def get_sessions():
+    sessions = []
+    for session_id, messages in session_history.items():
+        title = generate_session_title(messages)
+        preview = messages[-1]["content"] if messages else ""
+        sessions.append({"session_id": session_id, "title": title, "preview": preview})
+    return {"sessions": sessions}
+
+# Endpoint to retrieve the full conversation for a specific session.
+@app.get("/session/{session_id}")
+async def get_session(session_id: str):
+    if session_id in session_history:
+        return {"session_id": session_id, "messages": session_history[session_id]}
+    else:
+        raise HTTPException(status_code=404, detail="Session not found")
