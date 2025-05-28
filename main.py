@@ -8,6 +8,8 @@ import base64
 import io
 import json
 import re
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from typing import Optional, List, Dict, Any, Union
 from contextlib import contextmanager
 from pydantic import BaseModel, Field, EmailStr
@@ -21,6 +23,277 @@ import secrets
 from PIL import Image
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
+
+# Google Sheets Database Class
+class GoogleSheetsDB:
+    def __init__(self, credentials_json: str, spreadsheet_name: str):
+        """Initialize the Google Sheets database connection.
+        
+        Args:
+            credentials_json: The service account credentials JSON as a string
+            spreadsheet_name: Name of the Google Sheet to use as database
+        """
+        self.scope = ['https://spreadsheets.google.com/feeds',
+                      'https://www.googleapis.com/auth/drive']
+        
+        try:
+            # Authenticate with Google using the JSON string
+            credentials_dict = json.loads(credentials_json)
+            credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+                credentials_dict, self.scope
+            )
+            self.client = gspread.authorize(credentials)
+            
+            # Open the spreadsheet
+            try:
+                self.spreadsheet = self.client.open(spreadsheet_name)
+                logging.info(f"Successfully connected to Google Sheet: {spreadsheet_name}")
+            except gspread.exceptions.SpreadsheetNotFound:
+                # Create the spreadsheet if it doesn't exist
+                self.spreadsheet = self.client.create(spreadsheet_name)
+                logging.info(f"Created new Google Sheet: {spreadsheet_name}")
+                
+                # Initialize the sheets structure
+                self._initialize_sheets()
+        except Exception as e:
+            logging.error(f"Error connecting to Google Sheets: {str(e)}")
+            raise
+    
+    def _initialize_sheets(self):
+        """Create the initial structure of the spreadsheet with required sheets and headers."""
+        # Setup conversations sheet
+        try:
+            conversations_sheet = self.spreadsheet.add_worksheet(title="conversations", rows=1000, cols=6)
+            conversations_sheet.append_row([
+                "id", "session_id", "timestamp", "role", "content", "model"
+            ])
+            logging.info("Created conversations sheet")
+        except Exception as e:
+            logging.warning(f"Could not create conversations sheet: {str(e)}")
+        
+        # Setup sessions sheet
+        try:
+            sessions_sheet = self.spreadsheet.add_worksheet(title="sessions", rows=1000, cols=5)
+            sessions_sheet.append_row([
+                "session_id", "created_at", "last_activity", "title", "industry"
+            ])
+            logging.info("Created sessions sheet")
+        except Exception as e:
+            logging.warning(f"Could not create sessions sheet: {str(e)}")
+        
+        # Setup users sheet
+        try:
+            users_sheet = self.spreadsheet.add_worksheet(title="users", rows=1000, cols=5)
+            users_sheet.append_row([
+                "user_id", "email", "name", "created_at", "last_login"
+            ])
+            logging.info("Created users sheet")
+        except Exception as e:
+            logging.warning(f"Could not create users sheet: {str(e)}")
+    
+    def _get_sheet(self, sheet_name: str):
+        """Get a worksheet by name, creating it if it doesn't exist."""
+        try:
+            return self.spreadsheet.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            # If the sheet doesn't exist, create it with appropriate headers
+            if sheet_name == "conversations":
+                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=6)
+                sheet.append_row(["id", "session_id", "timestamp", "role", "content", "model"])
+            elif sheet_name == "sessions":
+                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=5)
+                sheet.append_row(["session_id", "created_at", "last_activity", "title", "industry"])
+            elif sheet_name == "users":
+                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=5)
+                sheet.append_row(["user_id", "email", "name", "created_at", "last_login"])
+            else:
+                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+            return sheet
+    
+    # --- Conversation Methods ---
+    
+    def add_message(self, session_id: str, role: str, content: str, model: str = "gpt-4") -> str:
+        """Add a new message to the conversations sheet.
+        
+        Args:
+            session_id: The ID of the session this message belongs to
+            role: Either 'user' or 'assistant'
+            content: The message content
+            model: The AI model used (for assistant messages)
+            
+        Returns:
+            The message ID
+        """
+        sheet = self._get_sheet("conversations")
+        timestamp = datetime.datetime.now().isoformat()
+        message_id = f"msg_{timestamp.replace(':', '_')}_{session_id[-6:]}"
+        
+        # Update the sessions last_activity
+        self.update_session_activity(session_id)
+        
+        # Add the new message
+        sheet.append_row([
+            message_id,
+            session_id,
+            timestamp,
+            role,
+            content,
+            model if role == "assistant" else ""
+        ])
+        
+        return message_id
+    
+    def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Get all messages for a specific session."""
+        sheet = self._get_sheet("conversations")
+        
+        # Get all rows
+        all_records = sheet.get_all_records()
+        
+        # Filter for the session and sort by timestamp
+        session_messages = [
+            {"id": row["id"], 
+             "role": row["role"], 
+             "content": row["content"],
+             "timestamp": row["timestamp"]}
+            for row in all_records if row["session_id"] == session_id
+        ]
+        
+        # Sort by timestamp
+        session_messages.sort(key=lambda x: x["timestamp"])
+        
+        return session_messages
+    
+    # --- Session Methods ---
+    
+    def create_session(self, session_id: str, industry: Optional[str] = None) -> None:
+        """Create a new chat session."""
+        sheet = self._get_sheet("sessions")
+        timestamp = datetime.datetime.now().isoformat()
+        
+        sheet.append_row([
+            session_id,
+            timestamp,  # created_at
+            timestamp,  # last_activity
+            "New Conversation",  # title
+            industry or ""  # industry
+        ])
+    
+    def update_session_activity(self, session_id: str) -> None:
+        """Update the last_activity timestamp for a session."""
+        sheet = self._get_sheet("sessions")
+        
+        # Find the row with this session_id
+        cell = sheet.find(session_id)
+        if cell:
+            timestamp = datetime.datetime.now().isoformat()
+            sheet.update_cell(cell.row, 3, timestamp)  # Column 3 is last_activity
+    
+    def update_session_title(self, session_id: str, title: str) -> None:
+        """Update the title of a session."""
+        sheet = self._get_sheet("sessions")
+        
+        # Find the row with this session_id
+        cell = sheet.find(session_id)
+        if cell:
+            sheet.update_cell(cell.row, 4, title)  # Column 4 is title
+    
+    def get_sessions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get the most recent sessions, sorted by last_activity."""
+        sheet = self._get_sheet("sessions")
+        
+        # Get all rows
+        all_records = sheet.get_all_records()
+        
+        # Sort by last_activity (newest first)
+        sorted_records = sorted(
+            all_records, 
+            key=lambda x: x["last_activity"] if x["last_activity"] else "", 
+            reverse=True
+        )
+        
+        return sorted_records[:limit]
+    
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific session by ID."""
+        sheet = self._get_sheet("sessions")
+        
+        # Get all rows
+        all_records = sheet.get_all_records()
+        
+        # Find the matching session
+        for record in all_records:
+            if record["session_id"] == session_id:
+                return record
+        
+        return None
+    
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session and all its messages."""
+        # First delete the session record
+        sessions_sheet = self._get_sheet("sessions")
+        cell = sessions_sheet.find(session_id)
+        if cell:
+            sessions_sheet.delete_row(cell.row)
+            
+            # Now delete all messages for this session
+            messages_sheet = self._get_sheet("conversations")
+            rows_to_delete = []
+            
+            # Find all messages with this session_id
+            session_id_cells = messages_sheet.findall(session_id)
+            for cell in session_id_cells:
+                # Only delete if it's in the session_id column (column 2)
+                if cell.col == 2:
+                    rows_to_delete.append(cell.row)
+            
+            # Delete rows in reverse order to avoid changing indices
+            for row in sorted(rows_to_delete, reverse=True):
+                messages_sheet.delete_row(row)
+            
+            return True
+        
+        return False
+    
+    # --- User Methods ---
+    
+    def add_user(self, user_id: str, email: str, name: str) -> None:
+        """Add a new user to the users sheet."""
+        sheet = self._get_sheet("users")
+        timestamp = datetime.datetime.now().isoformat()
+        
+        sheet.append_row([
+            user_id,
+            email,
+            name,
+            timestamp,  # created_at
+            timestamp   # last_login
+        ])
+    
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Find a user by email address."""
+        sheet = self._get_sheet("users")
+        
+        # Get all rows
+        all_records = sheet.get_all_records()
+        
+        # Find the matching user
+        for record in all_records:
+            if record["email"] == email:
+                return record
+        
+        return None
+    
+    def update_user_login(self, user_id: str) -> None:
+        """Update the last_login timestamp for a user."""
+        sheet = self._get_sheet("users")
+        
+        # Find the row with this user_id
+        cell = sheet.find(user_id)
+        if cell:
+            timestamp = datetime.datetime.now().isoformat()
+            sheet.update_cell(cell.row, 5, timestamp)  # Column 5 is last_login
 
 # Initialize FastAPI app
 app = FastAPI(title="AI CEO Business Consultant API")
@@ -48,40 +321,33 @@ DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))  # Default 
 # Enhanced system prompt
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", """
 You are an elite business consultant with deep expertise spanning finance, marketing, strategy, operations, and leadership. Your guidance is sought by entrepreneurs and executives at all stages of business development.
-
 Your areas of expertise include:
 1. Financial Analysis & Planning:
-   - Cash flow management, financial modeling, and investment evaluation
-   - Fundraising strategies (VC, angel investment, bootstrapping)
-   - Pricing strategies and revenue optimization
-
+- Cash flow management, financial modeling, and investment evaluation
+- Fundraising strategies (VC, angel investment, bootstrapping)
+- Pricing strategies and revenue optimization
 2. Market Research & Strategy:
-   - Market sizing and competitive analysis
-   - Customer segmentation and targeting
-   - Product-market fit evaluation
-
+- Market sizing and competitive analysis
+- Customer segmentation and targeting
+- Product-market fit evaluation
 3. Growth & Marketing:
-   - Go-to-market strategies
-   - Digital marketing optimization and channel selection
-   - Sales funnel optimization and conversion strategies
-
+- Go-to-market strategies
+- Digital marketing optimization and channel selection
+- Sales funnel optimization and conversion strategies
 4. Operations & Scaling:
-   - Process optimization and automation
-   - Team structure and hiring strategies
-   - Supply chain and vendor management
-
+- Process optimization and automation
+- Team structure and hiring strategies
+- Supply chain and vendor management
 5. Leadership & Management:
-   - Executive decision-making frameworks
-   - Team building and organizational culture
-   - Crisis management and turnaround strategies
-
+- Executive decision-making frameworks
+- Team building and organizational culture
+- Crisis management and turnaround strategies
 In your responses:
 - Prioritize actionable, specific advice over generic statements
 - Support recommendations with business principles and relevant examples
 - Consider both short-term wins and long-term sustainability
 - When appropriate, outline step-by-step implementation plans
 - Be honest about limitations and risks in your recommended approaches
-
 Your goal is to provide the kind of strategic insight and practical guidance that would typically cost thousands of dollars in consulting fees.
 """)
 
@@ -89,7 +355,6 @@ Your goal is to provide the kind of strategic insight and practical guidance tha
 INDUSTRY_PROMPTS = {
     "tech": """
 You are a technology industry expert consultant with deep knowledge of SaaS, marketplaces, mobile apps, enterprise software, and consumer tech. You understand tech business models, pricing strategies, user acquisition, and product-market fit for tech companies.
-
 Your specialized guidance covers:
 - SaaS metrics (CAC, LTV, churn, MRR/ARR)
 - Tech startup fundraising (pre-seed to Series C+)
@@ -97,11 +362,9 @@ Your specialized guidance covers:
 - Product development frameworks
 - Tech team hiring and management
 - Tech platform selection and scaling
-    """,
-    
+""",
     "healthcare": """
 You are a healthcare industry consultant with expertise in healthcare delivery, medical devices, pharmaceuticals, digital health, and healthcare regulations. You understand reimbursement models, clinical workflows, and healthcare compliance.
-
 Your specialized guidance covers:
 - Healthcare business models and revenue cycle management
 - Regulatory pathways (FDA, HIPAA, etc.)
@@ -109,11 +372,9 @@ Your specialized guidance covers:
 - Patient acquisition and engagement
 - Healthcare operations optimization
 - Value-based care implementation
-    """,
-    
+""",
     "retail": """
 You are a retail business consultant with expertise in both online and brick-and-mortar retail operations. You understand inventory management, merchandising, retail analytics, customer experience, and omnichannel strategies.
-
 Your specialized guidance covers:
 - Retail pricing and promotion strategies
 - Store operations and layout optimization
@@ -121,11 +382,9 @@ Your specialized guidance covers:
 - Retail customer analytics and personalization
 - E-commerce and omnichannel integration
 - Retail staffing and customer service excellence
-    """,
-    
+""",
     "finance": """
 You are a financial services industry consultant with expertise in banking, investments, insurance, fintech, and financial regulations. You understand financial product development, risk management, and compliance requirements.
-
 Your specialized guidance covers:
 - Financial product design and pricing
 - Risk assessment and management frameworks
@@ -133,11 +392,9 @@ Your specialized guidance covers:
 - Customer acquisition in financial services
 - Banking operations and efficiency
 - Fintech innovation and implementation
-    """,
-    
+""",
     "manufacturing": """
 You are a manufacturing industry consultant with expertise in production processes, supply chain management, quality control, and lean manufacturing. You understand production economics, inventory management, and manufacturing technology.
-
 Your specialized guidance covers:
 - Manufacturing process optimization
 - Supply chain resilience and management
@@ -145,17 +402,34 @@ Your specialized guidance covers:
 - Cost reduction strategies in manufacturing
 - Factory layout and workflow design
 - Manufacturing technology implementation
-    """
+"""
 }
 
-# Global in-memory dictionary to store session history
+# Global in-memory dictionary to store session history (fallback if Google Sheets fails)
 session_history: Dict[str, Dict[str, Any]] = {}
-# Global in-memory dictionary to store user data
+# Global in-memory dictionary to store user data (fallback if Google Sheets fails)
 users_db: Dict[str, Dict[str, Any]] = {}
 # Global in-memory token storage
 tokens_db: Dict[str, str] = {}
 
-# Database management
+# Initialize Google Sheets DB
+GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "dollrDB1")
+
+# Initialize sheets_db as None first (will be set if credentials exist)
+sheets_db = None
+
+if GOOGLE_CREDS_JSON:
+    try:
+        sheets_db = GoogleSheetsDB(GOOGLE_CREDS_JSON, GOOGLE_SHEET_NAME)
+        logging.info("Google Sheets database initialized successfully")
+    except Exception as e:
+        logging.error(f"Failed to initialize Google Sheets database: {str(e)}")
+        # sheets_db remains None, will fall back to in-memory storage
+else:
+    logging.warning("GOOGLE_CREDS_JSON environment variable not set. Using in-memory storage instead.")
+
+# Database management (fallback SQLite in-memory)
 @contextmanager
 def get_db_connection():
     """Context manager for database connections"""
@@ -173,32 +447,32 @@ def init_db():
         cursor = conn.cursor()
         # Create sessions table
         cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            session_id TEXT PRIMARY KEY,
-            created_at TEXT,
-            last_activity TEXT
-        )
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                created_at TEXT,
+                last_activity TEXT
+            )
         ''')
         # Create messages table
         cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            role TEXT,
-            content TEXT,
-            timestamp TEXT,
-            FOREIGN KEY (session_id) REFERENCES sessions (session_id)
-        )
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                timestamp TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+            )
         ''')
         # Create users table
         cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id TEXT PRIMARY KEY,
-            email TEXT UNIQUE,
-            password_hash TEXT,
-            name TEXT,
-            created_at TEXT
-        )
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                email TEXT UNIQUE,
+                password_hash TEXT,
+                name TEXT,
+                created_at TEXT
+            )
         ''')
         conn.commit()
 
@@ -271,15 +545,15 @@ def extract_insights(messages: List[Dict[str, str]]) -> Dict[str, List[str]]:
     for msg in messages:
         if msg["role"] == "assistant":
             assistant_content += msg["content"] + "\n\n"
-
+    
     # Simple pattern matching for insights
     opportunities = re.findall(r'opportunity|potential|growth|advantage|chance', 
-                             assistant_content, re.IGNORECASE)
+                               assistant_content, re.IGNORECASE)
     challenges = re.findall(r'challenge|problem|issue|difficulty|obstacle|risk', 
-                          assistant_content, re.IGNORECASE)
+                           assistant_content, re.IGNORECASE)
     actions = re.findall(r'should|recommend|suggest|implement|step|action|plan', 
-                       assistant_content, re.IGNORECASE)
-
+                        assistant_content, re.IGNORECASE)
+    
     # If we don't find enough insights with simple pattern matching,
     # we can use the OpenAI API to generate them
     if len(opportunities) < 2 or len(challenges) < 2 or len(actions) < 2:
@@ -292,14 +566,12 @@ def extract_insights(messages: List[Dict[str, str]]) -> Dict[str, List[str]]:
                 ],
                 temperature=0.3
             )
-            
             result = response.choices[0].message.content
             try:
                 # Try to extract JSON from the response
                 json_match = re.search(r'```json\s*(.*?)\s*```', result, re.DOTALL)
                 if json_match:
                     result = json_match.group(1)
-                
                 insights = json.loads(result)
                 if isinstance(insights, dict):
                     return {
@@ -357,7 +629,6 @@ def get_system_prompt(industry: Optional[str] = None) -> str:
 
 # Simple security
 security = HTTPBearer()
-
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     if token not in tokens_db:
@@ -372,13 +643,14 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    logging.info("Database initialized")
+    logging.info("In-memory SQLite database initialized")
 
 # Endpoints
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {"status": "ok", "model": MODEL}
+    db_status = "google_sheets" if sheets_db else "in_memory"
+    return {"status": "ok", "model": MODEL, "database": db_status}
 
 @app.options("/chat")
 async def options_chat():
@@ -399,22 +671,46 @@ async def chat(request: ChatRequest):
         session_id = request.session_id
         current_time = datetime.datetime.now().isoformat()
         
-        if session_id is None or session_id not in session_history:
-            session_id = str(uuid.uuid4())
-            # Get appropriate system prompt
-            system_prompt = get_system_prompt(request.industry)
-            session_history[session_id] = {
-                "messages": [{"role": "system", "content": system_prompt}],
-                "created_at": current_time,
-                "industry": request.industry
-            }
+        # If sheets_db is available, use it; otherwise fall back to in-memory
+        if sheets_db:
+            if session_id is None or not sheets_db.get_session(session_id):
+                # Create a new session
+                session_id = str(uuid.uuid4())
+                # Get appropriate system prompt
+                system_prompt = get_system_prompt(request.industry)
+                
+                # Create the session in Google Sheets
+                sheets_db.create_session(session_id, request.industry)
+                
+                # Add the system message
+                sheets_db.add_message(session_id, "system", system_prompt)
+                
+            # Add the user message to Google Sheets
+            sheets_db.add_message(session_id, "user", request.message)
+            
+            # Retrieve all messages for this session to build context
+            messages = sheets_db.get_session_messages(session_id)
+            conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            
+        else:
+            # Fallback to in-memory storage
+            if session_id is None or session_id not in session_history:
+                session_id = str(uuid.uuid4())
+                # Get appropriate system prompt
+                system_prompt = get_system_prompt(request.industry)
+                session_history[session_id] = {
+                    "messages": [{"role": "system", "content": system_prompt}],
+                    "created_at": current_time,
+                    "industry": request.industry
+                }
+            
+            # Append the user's message.
+            session_history[session_id]["messages"].append({"role": "user", "content": request.message})
+            
+            # Use the entire conversation history as context.
+            conversation = session_history[session_id]["messages"]
         
-        # Append the user's message.
-        session_history[session_id]["messages"].append({"role": "user", "content": request.message})
         logging.info(f"Session {session_id} - Received message: {request.message}")
-        
-        # Use the entire conversation history as context.
-        conversation = session_history[session_id]["messages"]
         
         # Call the OpenAI API
         response = await asyncio.to_thread(
@@ -427,8 +723,20 @@ async def chat(request: ChatRequest):
         
         ai_response = response.get("choices", [{}])[0].get("message", {}).get("content", "")
         
-        # Append the assistant's response to the session history.
-        session_history[session_id]["messages"].append({"role": "assistant", "content": ai_response})
+        # Store the assistant's response
+        if sheets_db:
+            sheets_db.add_message(session_id, "assistant", ai_response, MODEL)
+            
+            # Generate and update the session title if it's a new session
+            session = sheets_db.get_session(session_id)
+            if session and session["title"] == "New Conversation":
+                # Use the first user message as the title
+                title = request.message[:50] + ("..." if len(request.message) > 50 else "")
+                sheets_db.update_session_title(session_id, title)
+        else:
+            # Fallback to in-memory storage
+            session_history[session_id]["messages"].append({"role": "assistant", "content": ai_response})
+        
         logging.info(f"Session {session_id} - Response sent: {ai_response[:100]}...")
         
         # Return the session id along with the reply.
@@ -441,33 +749,53 @@ async def chat(request: ChatRequest):
 async def get_sessions():
     """Retrieve a list of all chat sessions"""
     try:
-        sessions = []
-        for session_id, data in session_history.items():
-            messages = data.get("messages", [])
-            title = generate_session_title(messages)
+        if sheets_db:
+            # Get sessions from Google Sheets
+            sheet_sessions = sheets_db.get_sessions(MAX_SESSIONS)
             
-            # Get the most recent message as preview
-            preview = ""
-            for msg in reversed(messages):
-                if msg["role"] != "system":
-                    preview = msg["content"]
-                    break
+            sessions = []
+            for session in sheet_sessions:
+                # Get the first user message for preview
+                messages = sheets_db.get_session_messages(session["session_id"])
+                preview = ""
+                for msg in messages:
+                    if msg["role"] == "user":
+                        preview = msg["content"]
+                        break
+                
+                sessions.append({
+                    "session_id": session["session_id"],
+                    "title": session["title"] or "Untitled Session",
+                    "preview": preview[:100] + "..." if len(preview) > 100 else preview,
+                    "created_at": session["created_at"],
+                    "industry": session["industry"]
+                })
             
-            created_at = data.get("created_at", "")
-            industry = data.get("industry", "")
-            
-            sessions.append({
-                "session_id": session_id,
-                "title": title,
-                "preview": preview[:100] + "..." if len(preview) > 100 else preview,
-                "created_at": created_at,
-                "industry": industry
-            })
-        
-        # Sort by created_at (newest first)
-        sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        
-        return {"sessions": sessions[:MAX_SESSIONS]}
+            return {"sessions": sessions}
+        else:
+            # Fallback to in-memory storage
+            sessions = []
+            for session_id, data in session_history.items():
+                messages = data.get("messages", [])
+                title = generate_session_title(messages)
+                # Get the most recent message as preview
+                preview = ""
+                for msg in reversed(messages):
+                    if msg["role"] != "system":
+                        preview = msg["content"]
+                        break
+                created_at = data.get("created_at", "")
+                industry = data.get("industry", "")
+                sessions.append({
+                    "session_id": session_id,
+                    "title": title,
+                    "preview": preview[:100] + "..." if len(preview) > 100 else preview,
+                    "created_at": created_at,
+                    "industry": industry
+                })
+            # Sort by created_at (newest first)
+            sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return {"sessions": sessions[:MAX_SESSIONS]}
     except Exception as e:
         logging.error(f"Error in get_sessions endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -475,44 +803,114 @@ async def get_sessions():
 @app.get("/session/{session_id}")
 async def get_session(session_id: str):
     """Retrieve the full conversation for a specific session"""
-    if session_id in session_history:
-        data = session_history[session_id]
-        return {
-            "session_id": session_id,
-            "created_at": data.get("created_at", ""),
-            "messages": data.get("messages", []),
-            "industry": data.get("industry", "")
-        }
-    else:
-        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        if sheets_db:
+            # Get session data from Google Sheets
+            session = sheets_db.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            # Get messages for this session
+            messages = sheets_db.get_session_messages(session_id)
+            conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            
+            return {
+                "session_id": session_id,
+                "created_at": session.get("created_at", ""),
+                "messages": conversation,
+                "industry": session.get("industry", "")
+            }
+        else:
+            # Fallback to in-memory storage
+            if session_id in session_history:
+                data = session_history[session_id]
+                return {
+                    "session_id": session_id,
+                    "created_at": data.get("created_at", ""),
+                    "messages": data.get("messages", []),
+                    "industry": data.get("industry", "")
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving session: {str(e)}")
 
 @app.get("/session/{session_id}/analysis")
 async def analyze_session(session_id: str):
     """Analyze a session and extract key insights"""
-    if session_id in session_history:
-        data = session_history[session_id]
-        messages = data.get("messages", [])
-        
-        insights = extract_insights(messages)
-        return SessionAnalysisResponse(**insights)
-    else:
-        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        if sheets_db:
+            # Get session messages from Google Sheets
+            session = sheets_db.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            messages = sheets_db.get_session_messages(session_id)
+            conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            insights = extract_insights(conversation)
+            return SessionAnalysisResponse(**insights)
+        else:
+            # Fallback to in-memory storage
+            if session_id in session_history:
+                data = session_history[session_id]
+                messages = data.get("messages", [])
+                insights = extract_insights(messages)
+                return SessionAnalysisResponse(**insights)
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error analyzing session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error analyzing session: {str(e)}")
 
 @app.delete("/session/{session_id}")
 async def delete_session(session_id: str):
     """Delete a specific session"""
-    if session_id in session_history:
-        del session_history[session_id]
-        return {"status": "success", "message": "Session deleted"}
-    else:
-        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        if sheets_db:
+            # Delete session from Google Sheets
+            success = sheets_db.delete_session(session_id)
+            if success:
+                return {"status": "success", "message": "Session deleted"}
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+        else:
+            # Fallback to in-memory storage
+            if session_id in session_history:
+                del session_history[session_id]
+                return {"status": "success", "message": "Session deleted"}
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error deleting session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting session: {str(e)}")
 
 @app.post("/session/{session_id}/export")
 async def export_session(session_id: str):
     """Export a session as a formatted report"""
-    if session_id in session_history:
-        data = session_history[session_id]
-        messages = data.get("messages", [])
+    try:
+        messages = []
+        if sheets_db:
+            # Get messages from Google Sheets
+            session = sheets_db.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            sheet_messages = sheets_db.get_session_messages(session_id)
+            messages = [{"role": msg["role"], "content": msg["content"]} for msg in sheet_messages]
+        else:
+            # Fallback to in-memory storage
+            if session_id in session_history:
+                data = session_history[session_id]
+                messages = data.get("messages", [])
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
         
         # Generate a summary and extract key insights
         summary = generate_summary(messages)
@@ -535,47 +933,86 @@ async def export_session(session_id: str):
             "insights": insights,
             "conversation": conversation
         }
-        
         return report
-    else:
-        raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error exporting session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error exporting session: {str(e)}")
 
 @app.get("/stats")
 async def get_stats():
     """Get usage statistics"""
     try:
-        session_count = len(session_history)
-        message_count = sum(len(data.get("messages", [])) for data in session_history.values())
-        
-        # Calculate sessions in last 24 hours
-        now = datetime.datetime.now()
-        recent_sessions = 0
-        for data in session_history.values():
-            created_at = data.get("created_at", "")
-            try:
-                created_datetime = datetime.datetime.fromisoformat(created_at)
-                if (now - created_datetime).total_seconds() < 86400:  # 24 hours in seconds
-                    recent_sessions += 1
-            except (ValueError, TypeError):
-                pass
-        
-        # Calculate industry breakdown
-        industries = {}
-        for data in session_history.values():
-            industry = data.get("industry", "general")
-            if not industry:
-                industry = "general"
-            industries[industry] = industries.get(industry, 0) + 1
+        if sheets_db:
+            # Get stats from Google Sheets
+            all_sessions = sheets_db.get_sessions(1000)  # Get up to 1000 sessions
+            session_count = len(all_sessions)
+            
+            # Count messages
+            message_count = 0
+            recent_sessions = 0
+            industries = {}
+            
+            now = datetime.datetime.now()
+            
+            for session in all_sessions:
+                # Add to industry breakdown
+                industry = session.get("industry", "general")
+                if not industry:
+                    industry = "general"
+                industries[industry] = industries.get(industry, 0) + 1
+                
+                # Check if session is recent (last 24 hours)
+                try:
+                    created_at = session.get("created_at", "")
+                    if created_at:
+                        created_datetime = datetime.datetime.fromisoformat(created_at)
+                        if (now - created_datetime).total_seconds() < 86400:  # 24 hours in seconds
+                            recent_sessions += 1
+                except (ValueError, TypeError):
+                    pass
+                
+                # Get messages for this session
+                try:
+                    messages = sheets_db.get_session_messages(session["session_id"])
+                    message_count += len(messages)
+                except Exception as e:
+                    logging.error(f"Error getting messages for session {session['session_id']}: {str(e)}")
+        else:
+            # Fallback to in-memory storage
+            session_count = len(session_history)
+            message_count = sum(len(data.get("messages", [])) for data in session_history.values())
+            
+            # Calculate sessions in last 24 hours
+            now = datetime.datetime.now()
+            recent_sessions = 0
+            for data in session_history.values():
+                created_at = data.get("created_at", "")
+                try:
+                    created_datetime = datetime.datetime.fromisoformat(created_at)
+                    if (now - created_datetime).total_seconds() < 86400:  # 24 hours in seconds
+                        recent_sessions += 1
+                except (ValueError, TypeError):
+                    pass
+            
+            # Calculate industry breakdown
+            industries = {}
+            for data in session_history.values():
+                industry = data.get("industry", "general")
+                if not industry:
+                    industry = "general"
+                industries[industry] = industries.get(industry, 0) + 1
         
         avg_messages = message_count / session_count if session_count > 0 else 0
-        
         return {
             "total_sessions": session_count,
             "total_messages": message_count,
             "avg_messages_per_session": round(avg_messages, 2),
             "sessions_last_24h": recent_sessions,
             "industry_breakdown": industries,
-            "model": MODEL
+            "model": MODEL,
+            "database": "google_sheets" if sheets_db else "in_memory"
         }
     except Exception as e:
         logging.error(f"Error in stats endpoint: {str(e)}")
@@ -587,7 +1024,6 @@ async def analyze_document(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         file_extension = file.filename.split('.')[-1].lower()
-        
         # Extract text based on file type
         text = ""
         if file_extension in ['txt', 'md']:
@@ -614,9 +1050,7 @@ async def analyze_document(file: UploadFile = File(...)):
                 temperature=0.5
             )
         )
-        
         analysis = response.choices[0].message.content
-        
         return {
             "filename": file.filename,
             "analysis": analysis
@@ -632,7 +1066,6 @@ async def research_competitor(request: CompetitorRequest):
         # Create a prompt for the competitor analysis
         prompt = f"""
         Please provide a detailed competitor analysis for '{request.company_name}' in the {request.industry} industry. 
-        
         Include:
         1. Company overview and background
         2. Products/services
@@ -641,7 +1074,6 @@ async def research_competitor(request: CompetitorRequest):
         5. Market positioning
         6. Business model
         7. Key differentiators
-        
         {f"Also address these specific questions: {', '.join(request.specific_questions)}" if request.specific_questions else ""}
         """
         
@@ -656,9 +1088,7 @@ async def research_competitor(request: CompetitorRequest):
                 temperature=0.5
             )
         )
-        
         analysis = response.choices[0].message.content
-        
         return {
             "company": request.company_name,
             "industry": request.industry,
@@ -679,7 +1109,6 @@ async def generate_content(request: ContentRequest):
             "blog": "Write a business blog post",
             "presentation": "Create an outline for a business presentation with slide content"
         }
-        
         instruction = instructions.get(request.content_type, "Create professional business content")
         
         prompt = f"""
@@ -699,9 +1128,7 @@ async def generate_content(request: ContentRequest):
                 temperature=0.7
             )
         )
-        
         content = response.choices[0].message.content
-        
         return {
             "content_type": request.content_type,
             "topic": request.topic,
@@ -729,18 +1156,15 @@ async def visualize_financial(data: FinancialData):
             else:
                 # Single series
                 plt.plot(data.labels or list(data.data.keys()), list(data.data.values()))
-            
             plt.title(data.title)
             plt.ylabel("Amount")
             if data.labels:
                 plt.xlabel("Period")
-            
         elif data.data_type == "profit_loss":
             # For P&L, we might want a bar chart
             plt.bar(data.labels or list(data.data.keys()), list(data.data.values()))
             plt.title(data.title)
             plt.ylabel("Amount")
-            
         elif data.data_type == "metrics":
             # For metrics, we might want a radar chart
             # This is simplified - a real implementation would be more complex
@@ -757,7 +1181,6 @@ async def visualize_financial(data: FinancialData):
             plt.fill(angles, values, alpha=0.3)
             plt.xticks(angles[:-1], categories[:-1])
             plt.title(data.title)
-            
         else:
             # Default to a bar chart
             plt.bar(data.labels or list(data.data.keys()), list(data.data.values()))
@@ -786,20 +1209,32 @@ async def register_user(user: UserCreate):
     """Register a new user"""
     try:
         # Check if email already exists
-        if any(u.get("email") == user.email for u in users_db.values()):
-            raise HTTPException(status_code=400, detail="Email already registered")
-        
-        # Create user
-        user_id = str(uuid.uuid4())
-        hashed_password = hashlib.sha256(user.password.encode()).hexdigest()
-        
-        users_db[user_id] = {
-            "user_id": user_id,
-            "email": user.email,
-            "password_hash": hashed_password,
-            "name": user.name,
-            "created_at": datetime.datetime.now().isoformat()
-        }
+        if sheets_db:
+            existing_user = sheets_db.get_user_by_email(user.email)
+            if existing_user:
+                raise HTTPException(status_code=400, detail="Email already registered")
+            
+            # Create user
+            user_id = str(uuid.uuid4())
+            hashed_password = hashlib.sha256(user.password.encode()).hexdigest()
+            
+            # Add user to Google Sheets
+            sheets_db.add_user(user_id, user.email, user.name)
+        else:
+            # Fallback to in-memory storage
+            if any(u.get("email") == user.email for u in users_db.values()):
+                raise HTTPException(status_code=400, detail="Email already registered")
+            
+            # Create user
+            user_id = str(uuid.uuid4())
+            hashed_password = hashlib.sha256(user.password.encode()).hexdigest()
+            users_db[user_id] = {
+                "user_id": user_id,
+                "email": user.email,
+                "password_hash": hashed_password,
+                "name": user.name,
+                "created_at": datetime.datetime.now().isoformat()
+            }
         
         # Create token
         token = secrets.token_hex(32)
@@ -819,11 +1254,18 @@ async def login_user(user: UserLogin):
         # Find user by email
         found_user = None
         found_user_id = None
-        for user_id, u in users_db.items():
-            if u.get("email") == user.email:
-                found_user = u
-                found_user_id = user_id
-                break
+        
+        if sheets_db:
+            found_user = sheets_db.get_user_by_email(user.email)
+            if found_user:
+                found_user_id = found_user.get("user_id")
+        else:
+            # Fallback to in-memory storage
+            for user_id, u in users_db.items():
+                if u.get("email") == user.email:
+                    found_user = u
+                    found_user_id = user_id
+                    break
         
         if not found_user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -832,6 +1274,10 @@ async def login_user(user: UserLogin):
         hashed_password = hashlib.sha256(user.password.encode()).hexdigest()
         if found_user.get("password_hash") != hashed_password:
             raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        # Update last login if using Google Sheets
+        if sheets_db:
+            sheets_db.update_user_login(found_user_id)
         
         # Create token
         token = secrets.token_hex(32)
@@ -842,19 +1288,31 @@ async def login_user(user: UserLogin):
         raise
     except Exception as e:
         logging.error(f"Error logging in user: {str(e)}")
-        raise
-    
+        raise HTTPException(status_code=500, detail=f"Error logging in user: {str(e)}")
+
 @app.get("/user/me")
 async def get_current_user_info(user_id: str = Depends(get_current_user)):
     """Get current user information"""
-    if user_id not in users_db:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    user_data = users_db[user_id].copy()
-    # Remove sensitive information
-    user_data.pop("password_hash", None)
-    
-    return user_data
+    try:
+        if sheets_db:
+            # This would require a method to get user by ID from Google Sheets
+            # For now, we'll fallback to in-memory data
+            if user_id not in users_db:
+                raise HTTPException(status_code=404, detail="User not found")
+            user_data = users_db[user_id].copy()
+            # Remove sensitive information
+            user_data.pop("password_hash", None)
+            return user_data
+        else:
+            if user_id not in users_db:
+                raise HTTPException(status_code=404, detail="User not found")
+            user_data = users_db[user_id].copy()
+            # Remove sensitive information
+            user_data.pop("password_hash", None)
+            return user_data
+    except Exception as e:
+        logging.error(f"Error getting user info: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting user info: {str(e)}")
 
 @app.get("/user/sessions")
 async def get_user_sessions(user_id: str = Depends(get_current_user)):
@@ -862,33 +1320,54 @@ async def get_user_sessions(user_id: str = Depends(get_current_user)):
     try:
         # In a real implementation, we would filter sessions by user_id
         # For this demo, we'll just return all sessions
-        sessions = []
-        for session_id, data in session_history.items():
-            messages = data.get("messages", [])
-            title = generate_session_title(messages)
-            
-            # Get the most recent message as preview
-            preview = ""
-            for msg in reversed(messages):
-                if msg["role"] != "system":
-                    preview = msg["content"]
-                    break
-            
-            created_at = data.get("created_at", "")
-            industry = data.get("industry", "")
-            
-            sessions.append({
-                "session_id": session_id,
-                "title": title,
-                "preview": preview[:100] + "..." if len(preview) > 100 else preview,
-                "created_at": created_at,
-                "industry": industry
-            })
         
-        # Sort by created_at (newest first)
-        sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        
-        return {"sessions": sessions[:MAX_SESSIONS]}
+        if sheets_db:
+            # Get sessions from Google Sheets
+            sheet_sessions = sheets_db.get_sessions(MAX_SESSIONS)
+            
+            sessions = []
+            for session in sheet_sessions:
+                # Get the first user message for preview
+                messages = sheets_db.get_session_messages(session["session_id"])
+                preview = ""
+                for msg in messages:
+                    if msg["role"] == "user":
+                        preview = msg["content"]
+                        break
+                
+                sessions.append({
+                    "session_id": session["session_id"],
+                    "title": session["title"] or "Untitled Session",
+                    "preview": preview[:100] + "..." if len(preview) > 100 else preview,
+                    "created_at": session["created_at"],
+                    "industry": session["industry"]
+                })
+            
+            return {"sessions": sessions}
+        else:
+            # Fallback to in-memory storage
+            sessions = []
+            for session_id, data in session_history.items():
+                messages = data.get("messages", [])
+                title = generate_session_title(messages)
+                # Get the most recent message as preview
+                preview = ""
+                for msg in reversed(messages):
+                    if msg["role"] != "system":
+                        preview = msg["content"]
+                        break
+                created_at = data.get("created_at", "")
+                industry = data.get("industry", "")
+                sessions.append({
+                    "session_id": session_id,
+                    "title": title,
+                    "preview": preview[:100] + "..." if len(preview) > 100 else preview,
+                    "created_at": created_at,
+                    "industry": industry
+                })
+            # Sort by created_at (newest first)
+            sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return {"sessions": sessions[:MAX_SESSIONS]}
     except Exception as e:
         logging.error(f"Error in get_user_sessions endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -904,7 +1383,6 @@ async def calculate_roi(
     try:
         roi = (net_profit - initial_investment) / initial_investment * 100
         annual_roi = roi / investment_period
-        
         return {
             "roi": round(roi, 2),
             "annual_roi": round(annual_roi, 2),
@@ -932,10 +1410,8 @@ async def calculate_breakeven(
                 status_code=400, 
                 detail="Contribution margin must be positive (price must exceed variable cost)"
             )
-        
         breakeven_units = fixed_costs / contribution_margin
         breakeven_revenue = breakeven_units * price_per_unit
-        
         return {
             "breakeven_units": round(breakeven_units, 2),
             "breakeven_revenue": round(breakeven_revenue, 2),
@@ -966,9 +1442,7 @@ async def calculate_cash_burn(
                 "is_profitable": True,
                 "monthly_profit": -monthly_burn
             }
-        
         runway_months = starting_cash / monthly_burn
-        
         return {
             "cash_burn_rate": round(monthly_burn, 2),
             "runway_months": round(runway_months, 2),
@@ -988,6 +1462,3 @@ async def calculate_cash_burn(
     except Exception as e:
         logging.error(f"Error calculating cash burn: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calculating cash burn: {str(e)}")
-
-# Add this if you need the NumPy import for the radar chart
-import numpy as np
