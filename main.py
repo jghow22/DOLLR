@@ -142,6 +142,7 @@ class GoogleSheetsDB:
             model if role == "assistant" else ""
         ])
         
+        logging.info(f"Added message: role={role}, session_id={session_id}, msg_id={message_id}")
         return message_id
     
     def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
@@ -150,6 +151,7 @@ class GoogleSheetsDB:
         
         # Get all rows
         all_records = sheet.get_all_records()
+        logging.info(f"Retrieved {len(all_records)} total message records from Google Sheets")
         
         # Filter for the session and sort by timestamp
         session_messages = [
@@ -160,8 +162,14 @@ class GoogleSheetsDB:
             for row in all_records if row["session_id"] == session_id
         ]
         
+        logging.info(f"Filtered to {len(session_messages)} messages for session {session_id}")
+        
         # Sort by timestamp
         session_messages.sort(key=lambda x: x["timestamp"])
+        
+        # Log message roles for debugging
+        roles = [msg["role"] for msg in session_messages]
+        logging.info(f"Message roles in order: {roles}")
         
         return session_messages
     
@@ -179,6 +187,8 @@ class GoogleSheetsDB:
             "New Conversation",  # title
             industry or ""  # industry
         ])
+        
+        logging.info(f"Created new session: id={session_id}, industry={industry}")
     
     def update_session_activity(self, session_id: str) -> None:
         """Update the last_activity timestamp for a session."""
@@ -189,6 +199,7 @@ class GoogleSheetsDB:
         if cell:
             timestamp = datetime.datetime.now().isoformat()
             sheet.update_cell(cell.row, 3, timestamp)  # Column 3 is last_activity
+            logging.info(f"Updated session activity: id={session_id}, timestamp={timestamp}")
     
     def update_session_title(self, session_id: str, title: str) -> None:
         """Update the title of a session."""
@@ -198,6 +209,7 @@ class GoogleSheetsDB:
         cell = sheet.find(session_id)
         if cell:
             sheet.update_cell(cell.row, 4, title)  # Column 4 is title
+            logging.info(f"Updated session title: id={session_id}, title={title}")
     
     def get_sessions(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get the most recent sessions, sorted by last_activity."""
@@ -205,6 +217,7 @@ class GoogleSheetsDB:
         
         # Get all rows
         all_records = sheet.get_all_records()
+        logging.info(f"Retrieved {len(all_records)} total session records")
         
         # Sort by last_activity (newest first)
         sorted_records = sorted(
@@ -236,6 +249,7 @@ class GoogleSheetsDB:
         cell = sessions_sheet.find(session_id)
         if cell:
             sessions_sheet.delete_row(cell.row)
+            logging.info(f"Deleted session record: id={session_id}")
             
             # Now delete all messages for this session
             messages_sheet = self._get_sheet("conversations")
@@ -252,6 +266,7 @@ class GoogleSheetsDB:
             for row in sorted(rows_to_delete, reverse=True):
                 messages_sheet.delete_row(row)
             
+            logging.info(f"Deleted {len(rows_to_delete)} messages for session: id={session_id}")
             return True
         
         return False
@@ -270,6 +285,8 @@ class GoogleSheetsDB:
             timestamp,  # created_at
             timestamp   # last_login
         ])
+        
+        logging.info(f"Added new user: id={user_id}, email={email}")
     
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Find a user by email address."""
@@ -294,6 +311,7 @@ class GoogleSheetsDB:
         if cell:
             timestamp = datetime.datetime.now().isoformat()
             sheet.update_cell(cell.row, 5, timestamp)  # Column 5 is last_login
+            logging.info(f"Updated user login: id={user_id}, timestamp={timestamp}")
 
 # Initialize FastAPI app
 app = FastAPI(title="AI CEO Business Consultant API")
@@ -671,11 +689,19 @@ async def chat(request: ChatRequest):
         session_id = request.session_id
         current_time = datetime.datetime.now().isoformat()
         
-        # If sheets_db is available, use it; otherwise fall back to in-memory
+        # If sheets_db is available, use it
         if sheets_db:
+            # Debug: Log the session ID
+            logging.info(f"Processing chat with session_id: {session_id}")
+            
+            is_new_session = False
+            # Check if this is a new session
             if session_id is None or not sheets_db.get_session(session_id):
                 # Create a new session
                 session_id = str(uuid.uuid4())
+                logging.info(f"Created new session with ID: {session_id}")
+                is_new_session = True
+                
                 # Get appropriate system prompt
                 system_prompt = get_system_prompt(request.industry)
                 
@@ -683,14 +709,24 @@ async def chat(request: ChatRequest):
                 sheets_db.create_session(session_id, request.industry)
                 
                 # Add the system message
-                sheets_db.add_message(session_id, "system", system_prompt)
-                
+                system_msg_id = sheets_db.add_message(session_id, "system", system_prompt)
+                logging.info(f"Added system message with ID: {system_msg_id}")
+            
             # Add the user message to Google Sheets
-            sheets_db.add_message(session_id, "user", request.message)
+            user_msg_id = sheets_db.add_message(session_id, "user", request.message)
+            logging.info(f"Added user message with ID: {user_msg_id}")
             
             # Retrieve all messages for this session to build context
             messages = sheets_db.get_session_messages(session_id)
+            logging.info(f"Retrieved {len(messages)} messages for session {session_id}")
+            
+            # Convert to the format OpenAI expects
             conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            
+            # Log the conversation for debugging
+            logging.info(f"Conversation context has {len(conversation)} messages")
+            for i, msg in enumerate(conversation):
+                logging.info(f"Message {i}: role={msg['role']}, content_length={len(msg['content'])}")
             
         else:
             # Fallback to in-memory storage
@@ -725,7 +761,8 @@ async def chat(request: ChatRequest):
         
         # Store the assistant's response
         if sheets_db:
-            sheets_db.add_message(session_id, "assistant", ai_response, MODEL)
+            assistant_msg_id = sheets_db.add_message(session_id, "assistant", ai_response, MODEL)
+            logging.info(f"Added assistant response with ID: {assistant_msg_id}")
             
             # Generate and update the session title if it's a new session
             session = sheets_db.get_session(session_id)
@@ -733,6 +770,7 @@ async def chat(request: ChatRequest):
                 # Use the first user message as the title
                 title = request.message[:50] + ("..." if len(request.message) > 50 else "")
                 sheets_db.update_session_title(session_id, title)
+                logging.info(f"Updated session title to: {title}")
         else:
             # Fallback to in-memory storage
             session_history[session_id]["messages"].append({"role": "assistant", "content": ai_response})
