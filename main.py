@@ -1,3 +1,4 @@
+
 import os
 import openai
 import asyncio
@@ -64,9 +65,9 @@ class GoogleSheetsDB:
         """Create the initial structure of the spreadsheet with required sheets and headers."""
         # Setup conversations sheet
         try:
-            conversations_sheet = self.spreadsheet.add_worksheet(title="conversations", rows=1000, cols=6)
+            conversations_sheet = self.spreadsheet.add_worksheet(title="conversations", rows=1000, cols=7)
             conversations_sheet.append_row([
-                "id", "session_id", "timestamp", "role", "content", "model"
+                "user_id", "id", "session_id", "timestamp", "role", "content", "model"
             ])
             logging.info("Created conversations sheet")
         except Exception as e:
@@ -74,9 +75,9 @@ class GoogleSheetsDB:
         
         # Setup sessions sheet
         try:
-            sessions_sheet = self.spreadsheet.add_worksheet(title="sessions", rows=1000, cols=5)
+            sessions_sheet = self.spreadsheet.add_worksheet(title="sessions", rows=1000, cols=6)
             sessions_sheet.append_row([
-                "session_id", "created_at", "last_activity", "title", "industry"
+                "user_id", "session_id", "created_at", "last_activity", "title", "industry"
             ])
             logging.info("Created sessions sheet")
         except Exception as e:
@@ -99,11 +100,11 @@ class GoogleSheetsDB:
         except gspread.exceptions.WorksheetNotFound:
             # If the sheet doesn't exist, create it with appropriate headers
             if sheet_name == "conversations":
-                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=6)
-                sheet.append_row(["id", "session_id", "timestamp", "role", "content", "model"])
+                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=7)
+                sheet.append_row(["user_id", "id", "session_id", "timestamp", "role", "content", "model"])
             elif sheet_name == "sessions":
-                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=5)
-                sheet.append_row(["session_id", "created_at", "last_activity", "title", "industry"])
+                sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=6)
+                sheet.append_row(["user_id", "session_id", "created_at", "last_activity", "title", "industry"])
             elif sheet_name == "users":
                 sheet = self.spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=5)
                 sheet.append_row(["user_id", "email", "name", "created_at", "last_login"])
@@ -113,10 +114,11 @@ class GoogleSheetsDB:
     
     # --- Conversation Methods ---
     
-    def add_message(self, session_id: str, role: str, content: str, model: str = "gpt-4") -> str:
+    def add_message(self, user_id: str, session_id: str, role: str, content: str, model: str = "gpt-4") -> str:
         """Add a new message to the conversations sheet.
         
         Args:
+            user_id: The ID of the user this message belongs to
             session_id: The ID of the session this message belongs to
             role: Either 'user' or 'assistant'
             content: The message content
@@ -130,10 +132,11 @@ class GoogleSheetsDB:
         message_id = f"msg_{timestamp.replace(':', '_')}_{session_id[-6:]}"
         
         # Update the sessions last_activity
-        self.update_session_activity(session_id)
+        self.update_session_activity(user_id, session_id)
         
         # Add the new message
         sheet.append_row([
+            user_id,
             message_id,
             session_id,
             timestamp,
@@ -142,27 +145,27 @@ class GoogleSheetsDB:
             model if role == "assistant" else ""
         ])
         
-        logging.info(f"Added message: role={role}, session_id={session_id}, msg_id={message_id}")
+        logging.info(f"Added message: user_id={user_id}, role={role}, session_id={session_id}, msg_id={message_id}")
         return message_id
     
-    def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Get all messages for a specific session."""
+    def get_session_messages(self, user_id: str, session_id: str) -> List[Dict[str, Any]]:
+        """Get all messages for a specific session and user."""
         sheet = self._get_sheet("conversations")
         
         # Get all rows
         all_records = sheet.get_all_records()
         logging.info(f"Retrieved {len(all_records)} total message records from Google Sheets")
         
-        # Filter for the session and sort by timestamp
+        # Filter for the session and user, then sort by timestamp
         session_messages = [
             {"id": row["id"], 
              "role": row["role"], 
              "content": row["content"],
              "timestamp": row["timestamp"]}
-            for row in all_records if row["session_id"] == session_id
+            for row in all_records if row["session_id"] == session_id and row["user_id"] == user_id
         ]
         
-        logging.info(f"Filtered to {len(session_messages)} messages for session {session_id}")
+        logging.info(f"Filtered to {len(session_messages)} messages for user {user_id}, session {session_id}")
         
         # Sort by timestamp
         session_messages.sort(key=lambda x: x["timestamp"])
@@ -175,12 +178,13 @@ class GoogleSheetsDB:
     
     # --- Session Methods ---
     
-    def create_session(self, session_id: str, industry: Optional[str] = None) -> None:
-        """Create a new chat session."""
+    def create_session(self, user_id: str, session_id: str, industry: Optional[str] = None) -> None:
+        """Create a new chat session for a specific user."""
         sheet = self._get_sheet("sessions")
         timestamp = datetime.datetime.now().isoformat()
         
         sheet.append_row([
+            user_id,
             session_id,
             timestamp,  # created_at
             timestamp,  # last_activity
@@ -188,88 +192,101 @@ class GoogleSheetsDB:
             industry or ""  # industry
         ])
         
-        logging.info(f"Created new session: id={session_id}, industry={industry}")
+        logging.info(f"Created new session: user_id={user_id}, id={session_id}, industry={industry}")
     
-    def update_session_activity(self, session_id: str) -> None:
+    def update_session_activity(self, user_id: str, session_id: str) -> None:
         """Update the last_activity timestamp for a session."""
         sheet = self._get_sheet("sessions")
         
-        # Find the row with this session_id
-        cell = sheet.find(session_id)
-        if cell:
-            timestamp = datetime.datetime.now().isoformat()
-            sheet.update_cell(cell.row, 3, timestamp)  # Column 3 is last_activity
-            logging.info(f"Updated session activity: id={session_id}, timestamp={timestamp}")
+        # Find the row with this session_id and user_id
+        all_records = sheet.get_all_records()
+        for i, record in enumerate(all_records):
+            if record["session_id"] == session_id and record["user_id"] == user_id:
+                timestamp = datetime.datetime.now().isoformat()
+                sheet.update_cell(i + 2, 4, timestamp)  # Column 4 is last_activity (accounting for header row)
+                logging.info(f"Updated session activity: user_id={user_id}, id={session_id}, timestamp={timestamp}")
+                return
     
-    def update_session_title(self, session_id: str, title: str) -> None:
+    def update_session_title(self, user_id: str, session_id: str, title: str) -> None:
         """Update the title of a session."""
         sheet = self._get_sheet("sessions")
         
-        # Find the row with this session_id
-        cell = sheet.find(session_id)
-        if cell:
-            sheet.update_cell(cell.row, 4, title)  # Column 4 is title
-            logging.info(f"Updated session title: id={session_id}, title={title}")
+        # Find the row with this session_id and user_id
+        all_records = sheet.get_all_records()
+        for i, record in enumerate(all_records):
+            if record["session_id"] == session_id and record["user_id"] == user_id:
+                sheet.update_cell(i + 2, 5, title)  # Column 5 is title (accounting for header row)
+                logging.info(f"Updated session title: user_id={user_id}, id={session_id}, title={title}")
+                return
     
-    def get_sessions(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get the most recent sessions, sorted by last_activity."""
+    def get_sessions(self, user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get the most recent sessions for a specific user, sorted by last_activity."""
         sheet = self._get_sheet("sessions")
         
         # Get all rows
         all_records = sheet.get_all_records()
         logging.info(f"Retrieved {len(all_records)} total session records")
         
-        # Sort by last_activity (newest first)
+        # Filter for the user and sort by last_activity (newest first)
+        user_sessions = [
+            record for record in all_records if record["user_id"] == user_id
+        ]
+        
         sorted_records = sorted(
-            all_records, 
+            user_sessions, 
             key=lambda x: x["last_activity"] if x["last_activity"] else "", 
             reverse=True
         )
         
+        logging.info(f"Found {len(sorted_records)} sessions for user {user_id}")
         return sorted_records[:limit]
     
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific session by ID."""
+    def get_session(self, user_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific session by ID for a specific user."""
         sheet = self._get_sheet("sessions")
         
         # Get all rows
         all_records = sheet.get_all_records()
         
-        # Find the matching session
+        # Find the matching session for the user
         for record in all_records:
-            if record["session_id"] == session_id:
+            if record["session_id"] == session_id and record["user_id"] == user_id:
                 return record
         
         return None
     
-    def delete_session(self, session_id: str) -> bool:
-        """Delete a session and all its messages."""
+    def delete_session(self, user_id: str, session_id: str) -> bool:
+        """Delete a session and all its messages for a specific user."""
         # First delete the session record
         sessions_sheet = self._get_sheet("sessions")
-        cell = sessions_sheet.find(session_id)
-        if cell:
-            sessions_sheet.delete_row(cell.row)
-            logging.info(f"Deleted session record: id={session_id}")
-            
-            # Now delete all messages for this session
-            messages_sheet = self._get_sheet("conversations")
-            rows_to_delete = []
-            
-            # Find all messages with this session_id
-            session_id_cells = messages_sheet.findall(session_id)
-            for cell in session_id_cells:
-                # Only delete if it's in the session_id column (column 2)
-                if cell.col == 2:
-                    rows_to_delete.append(cell.row)
-            
-            # Delete rows in reverse order to avoid changing indices
-            for row in sorted(rows_to_delete, reverse=True):
-                messages_sheet.delete_row(row)
-            
-            logging.info(f"Deleted {len(rows_to_delete)} messages for session: id={session_id}")
-            return True
+        all_records = sessions_sheet.get_all_records()
+        rows_to_delete = []
         
-        return False
+        for i, record in enumerate(all_records):
+            if record["session_id"] == session_id and record["user_id"] == user_id:
+                rows_to_delete.append(i + 2)  # +2 to account for header row and 0-based index
+                logging.info(f"Found session record to delete: user_id={user_id}, id={session_id}")
+                break
+        
+        # Delete session rows in reverse order to avoid changing indices
+        for row in sorted(rows_to_delete, reverse=True):
+            sessions_sheet.delete_row(row)
+        
+        # Now delete all messages for this session and user
+        messages_sheet = self._get_sheet("conversations")
+        all_message_records = messages_sheet.get_all_records()
+        message_rows_to_delete = []
+        
+        for i, record in enumerate(all_message_records):
+            if record["session_id"] == session_id and record["user_id"] == user_id:
+                message_rows_to_delete.append(i + 2)  # +2 to account for header row and 0-based index
+        
+        # Delete message rows in reverse order to avoid changing indices
+        for row in sorted(message_rows_to_delete, reverse=True):
+            messages_sheet.delete_row(row)
+        
+        logging.info(f"Deleted {len(message_rows_to_delete)} messages for user {user_id}, session {session_id}")
+        return len(rows_to_delete) > 0
     
     # --- User Methods ---
     
@@ -307,11 +324,13 @@ class GoogleSheetsDB:
         sheet = self._get_sheet("users")
         
         # Find the row with this user_id
-        cell = sheet.find(user_id)
-        if cell:
-            timestamp = datetime.datetime.now().isoformat()
-            sheet.update_cell(cell.row, 5, timestamp)  # Column 5 is last_login
-            logging.info(f"Updated user login: id={user_id}, timestamp={timestamp}")
+        all_records = sheet.get_all_records()
+        for i, record in enumerate(all_records):
+            if record["user_id"] == user_id:
+                timestamp = datetime.datetime.now().isoformat()
+                sheet.update_cell(i + 2, 5, timestamp)  # Column 5 is last_login (accounting for header row)
+                logging.info(f"Updated user login: id={user_id}, timestamp={timestamp}")
+                return
 
 # Initialize FastAPI app
 app = FastAPI(title="AI CEO Business Consultant API")
@@ -499,6 +518,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     industry: Optional[str] = None
+    user_id: str  # Add user_id to the request model
 
 class SessionAnalysisResponse(BaseModel):
     opportunities: List[str]
@@ -684,6 +704,13 @@ async def chat(request: ChatRequest):
             detail="OpenAI API key is missing. Please check your environment variables."
         )
     
+    # Validate user_id is provided
+    if not request.user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id is required"
+        )
+    
     try:
         # Use an existing session or create a new one if none provided.
         session_id = request.session_id
@@ -692,11 +719,11 @@ async def chat(request: ChatRequest):
         # If sheets_db is available, use it
         if sheets_db:
             # Debug: Log the session ID
-            logging.info(f"Processing chat with session_id: {session_id}")
+            logging.info(f"Processing chat with user_id: {request.user_id}, session_id: {session_id}")
             
             is_new_session = False
             # Check if this is a new session
-            if session_id is None or not sheets_db.get_session(session_id):
+            if session_id is None or not sheets_db.get_session(request.user_id, session_id):
                 # Create a new session
                 session_id = str(uuid.uuid4())
                 logging.info(f"Created new session with ID: {session_id}")
@@ -706,18 +733,18 @@ async def chat(request: ChatRequest):
                 system_prompt = get_system_prompt(request.industry)
                 
                 # Create the session in Google Sheets
-                sheets_db.create_session(session_id, request.industry)
+                sheets_db.create_session(request.user_id, session_id, request.industry)
                 
                 # Add the system message
-                system_msg_id = sheets_db.add_message(session_id, "system", system_prompt)
+                system_msg_id = sheets_db.add_message(request.user_id, session_id, "system", system_prompt)
                 logging.info(f"Added system message with ID: {system_msg_id}")
             
             # Add the user message to Google Sheets
-            user_msg_id = sheets_db.add_message(session_id, "user", request.message)
+            user_msg_id = sheets_db.add_message(request.user_id, session_id, "user", request.message)
             logging.info(f"Added user message with ID: {user_msg_id}")
             
             # Retrieve all messages for this session to build context
-            messages = sheets_db.get_session_messages(session_id)
+            messages = sheets_db.get_session_messages(request.user_id, session_id)
             logging.info(f"Retrieved {len(messages)} messages for session {session_id}")
             
             # Convert to the format OpenAI expects
@@ -737,7 +764,8 @@ async def chat(request: ChatRequest):
                 session_history[session_id] = {
                     "messages": [{"role": "system", "content": system_prompt}],
                     "created_at": current_time,
-                    "industry": request.industry
+                    "industry": request.industry,
+                    "user_id": request.user_id
                 }
             
             # Append the user's message.
@@ -761,15 +789,15 @@ async def chat(request: ChatRequest):
         
         # Store the assistant's response
         if sheets_db:
-            assistant_msg_id = sheets_db.add_message(session_id, "assistant", ai_response, MODEL)
+            assistant_msg_id = sheets_db.add_message(request.user_id, session_id, "assistant", ai_response, MODEL)
             logging.info(f"Added assistant response with ID: {assistant_msg_id}")
             
             # Generate and update the session title if it's a new session
-            session = sheets_db.get_session(session_id)
+            session = sheets_db.get_session(request.user_id, session_id)
             if session and session["title"] == "New Conversation":
                 # Use the first user message as the title
                 title = request.message[:50] + ("..." if len(request.message) > 50 else "")
-                sheets_db.update_session_title(session_id, title)
+                sheets_db.update_session_title(request.user_id, session_id, title)
                 logging.info(f"Updated session title to: {title}")
         else:
             # Fallback to in-memory storage
@@ -784,17 +812,20 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.get("/sessions")
-async def get_sessions():
-    """Retrieve a list of all chat sessions"""
+async def get_sessions(user_id: str):
+    """Retrieve a list of all chat sessions for a specific user"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         if sheets_db:
             # Get sessions from Google Sheets
-            sheet_sessions = sheets_db.get_sessions(MAX_SESSIONS)
+            sheet_sessions = sheets_db.get_sessions(user_id, MAX_SESSIONS)
             
             sessions = []
             for session in sheet_sessions:
                 # Get the first user message for preview
-                messages = sheets_db.get_session_messages(session["session_id"])
+                messages = sheets_db.get_session_messages(user_id, session["session_id"])
                 preview = ""
                 for msg in messages:
                     if msg["role"] == "user":
@@ -814,23 +845,25 @@ async def get_sessions():
             # Fallback to in-memory storage
             sessions = []
             for session_id, data in session_history.items():
-                messages = data.get("messages", [])
-                title = generate_session_title(messages)
-                # Get the most recent message as preview
-                preview = ""
-                for msg in reversed(messages):
-                    if msg["role"] != "system":
-                        preview = msg["content"]
-                        break
-                created_at = data.get("created_at", "")
-                industry = data.get("industry", "")
-                sessions.append({
-                    "session_id": session_id,
-                    "title": title,
-                    "preview": preview[:100] + "..." if len(preview) > 100 else preview,
-                    "created_at": created_at,
-                    "industry": industry
-                })
+                # Only include sessions for this user
+                if data.get("user_id") == user_id:
+                    messages = data.get("messages", [])
+                    title = generate_session_title(messages)
+                    # Get the most recent message as preview
+                    preview = ""
+                    for msg in reversed(messages):
+                        if msg["role"] != "system":
+                            preview = msg["content"]
+                            break
+                    created_at = data.get("created_at", "")
+                    industry = data.get("industry", "")
+                    sessions.append({
+                        "session_id": session_id,
+                        "title": title,
+                        "preview": preview[:100] + "..." if len(preview) > 100 else preview,
+                        "created_at": created_at,
+                        "industry": industry
+                    })
             # Sort by created_at (newest first)
             sessions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
             return {"sessions": sessions[:MAX_SESSIONS]}
@@ -839,17 +872,20 @@ async def get_sessions():
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.get("/session/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, user_id: str):
     """Retrieve the full conversation for a specific session"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         if sheets_db:
             # Get session data from Google Sheets
-            session = sheets_db.get_session(session_id)
+            session = sheets_db.get_session(user_id, session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
             
             # Get messages for this session
-            messages = sheets_db.get_session_messages(session_id)
+            messages = sheets_db.get_session_messages(user_id, session_id)
             conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
             
             return {
@@ -862,6 +898,9 @@ async def get_session(session_id: str):
             # Fallback to in-memory storage
             if session_id in session_history:
                 data = session_history[session_id]
+                # Check if this session belongs to the user
+                if data.get("user_id") != user_id:
+                    raise HTTPException(status_code=404, detail="Session not found")
                 return {
                     "session_id": session_id,
                     "created_at": data.get("created_at", ""),
@@ -877,16 +916,19 @@ async def get_session(session_id: str):
         raise HTTPException(status_code=500, detail=f"Error retrieving session: {str(e)}")
 
 @app.get("/session/{session_id}/analysis")
-async def analyze_session(session_id: str):
+async def analyze_session(session_id: str, user_id: str):
     """Analyze a session and extract key insights"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         if sheets_db:
             # Get session messages from Google Sheets
-            session = sheets_db.get_session(session_id)
+            session = sheets_db.get_session(user_id, session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
             
-            messages = sheets_db.get_session_messages(session_id)
+            messages = sheets_db.get_session_messages(user_id, session_id)
             conversation = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
             insights = extract_insights(conversation)
             return SessionAnalysisResponse(**insights)
@@ -894,6 +936,9 @@ async def analyze_session(session_id: str):
             # Fallback to in-memory storage
             if session_id in session_history:
                 data = session_history[session_id]
+                # Check if this session belongs to the user
+                if data.get("user_id") != user_id:
+                    raise HTTPException(status_code=404, detail="Session not found")
                 messages = data.get("messages", [])
                 insights = extract_insights(messages)
                 return SessionAnalysisResponse(**insights)
@@ -906,12 +951,15 @@ async def analyze_session(session_id: str):
         raise HTTPException(status_code=500, detail=f"Error analyzing session: {str(e)}")
 
 @app.delete("/session/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user_id: str):
     """Delete a specific session"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         if sheets_db:
             # Delete session from Google Sheets
-            success = sheets_db.delete_session(session_id)
+            success = sheets_db.delete_session(user_id, session_id)
             if success:
                 return {"status": "success", "message": "Session deleted"}
             else:
@@ -919,6 +967,10 @@ async def delete_session(session_id: str):
         else:
             # Fallback to in-memory storage
             if session_id in session_history:
+                data = session_history[session_id]
+                # Check if this session belongs to the user
+                if data.get("user_id") != user_id:
+                    raise HTTPException(status_code=404, detail="Session not found")
                 del session_history[session_id]
                 return {"status": "success", "message": "Session deleted"}
             else:
@@ -930,22 +982,28 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=500, detail=f"Error deleting session: {str(e)}")
 
 @app.post("/session/{session_id}/export")
-async def export_session(session_id: str):
+async def export_session(session_id: str, user_id: str):
     """Export a session as a formatted report"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         messages = []
         if sheets_db:
             # Get messages from Google Sheets
-            session = sheets_db.get_session(session_id)
+            session = sheets_db.get_session(user_id, session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
             
-            sheet_messages = sheets_db.get_session_messages(session_id)
+            sheet_messages = sheets_db.get_session_messages(user_id, session_id)
             messages = [{"role": msg["role"], "content": msg["content"]} for msg in sheet_messages]
         else:
             # Fallback to in-memory storage
             if session_id in session_history:
                 data = session_history[session_id]
+                # Check if this session belongs to the user
+                if data.get("user_id") != user_id:
+                    raise HTTPException(status_code=404, detail="Session not found")
                 messages = data.get("messages", [])
             else:
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -979,12 +1037,15 @@ async def export_session(session_id: str):
         raise HTTPException(status_code=500, detail=f"Error exporting session: {str(e)}")
 
 @app.get("/stats")
-async def get_stats():
-    """Get usage statistics"""
+async def get_stats(user_id: str):
+    """Get usage statistics for a specific user"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         if sheets_db:
             # Get stats from Google Sheets
-            all_sessions = sheets_db.get_sessions(1000)  # Get up to 1000 sessions
+            all_sessions = sheets_db.get_sessions(user_id, 1000)  # Get up to 1000 sessions
             session_count = len(all_sessions)
             
             # Count messages
@@ -1013,19 +1074,20 @@ async def get_stats():
                 
                 # Get messages for this session
                 try:
-                    messages = sheets_db.get_session_messages(session["session_id"])
+                    messages = sheets_db.get_session_messages(user_id, session["session_id"])
                     message_count += len(messages)
                 except Exception as e:
                     logging.error(f"Error getting messages for session {session['session_id']}: {str(e)}")
         else:
             # Fallback to in-memory storage
-            session_count = len(session_history)
-            message_count = sum(len(data.get("messages", [])) for data in session_history.values())
+            user_sessions = [data for data in session_history.values() if data.get("user_id") == user_id]
+            session_count = len(user_sessions)
+            message_count = sum(len(data.get("messages", [])) for data in user_sessions)
             
             # Calculate sessions in last 24 hours
             now = datetime.datetime.now()
             recent_sessions = 0
-            for data in session_history.values():
+            for data in user_sessions:
                 created_at = data.get("created_at", "")
                 try:
                     created_datetime = datetime.datetime.fromisoformat(created_at)
@@ -1036,7 +1098,7 @@ async def get_stats():
             
             # Calculate industry breakdown
             industries = {}
-            for data in session_history.values():
+            for data in user_sessions:
                 industry = data.get("industry", "general")
                 if not industry:
                     industry = "general"
@@ -1057,8 +1119,11 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.post("/analyze/document")
-async def analyze_document(file: UploadFile = File(...)):
+async def analyze_document(file: UploadFile = File(...), user_id: str = Form(...)):
     """Analyze a business document and provide insights"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         contents = await file.read()
         file_extension = file.filename.split('.')[-1].lower()
@@ -1098,8 +1163,11 @@ async def analyze_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error analyzing document: {str(e)}")
 
 @app.post("/research/competitor")
-async def research_competitor(request: CompetitorRequest):
+async def research_competitor(request: CompetitorRequest, user_id: str = Form(...)):
     """Research a competitor and provide analysis"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         # Create a prompt for the competitor analysis
         prompt = f"""
@@ -1137,8 +1205,11 @@ async def research_competitor(request: CompetitorRequest):
         raise HTTPException(status_code=500, detail=f"Error researching competitor: {str(e)}")
 
 @app.post("/generate/content")
-async def generate_content(request: ContentRequest):
+async def generate_content(request: ContentRequest, user_id: str = Form(...)):
     """Generate business content like marketing copy, emails, or presentations"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         # Adjust instructions based on content type
         instructions = {
@@ -1177,8 +1248,11 @@ async def generate_content(request: ContentRequest):
         raise HTTPException(status_code=500, detail=f"Error generating content: {str(e)}")
 
 @app.post("/visualize/financial")
-async def visualize_financial(data: FinancialData):
+async def visualize_financial(data: FinancialData, user_id: str = Form(...)):
     """Generate charts and visualizations from financial data"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
     try:
         # Create a figure
         plt.figure(figsize=(10, 6))
@@ -1189,7 +1263,8 @@ async def visualize_financial(data: FinancialData):
             if isinstance(list(data.data.values())[0], list):
                 # Multiple series
                 for key, values in data.data.items():
-                    plt.plot(data.labels or range(len(values)), values, label=key)
+                    if isinstance(values, list):
+                        plt.plot(data.labels or range(len(values)), values, label=key)
                 plt.legend()
             else:
                 # Single series
@@ -1361,12 +1436,12 @@ async def get_user_sessions(user_id: str = Depends(get_current_user)):
         
         if sheets_db:
             # Get sessions from Google Sheets
-            sheet_sessions = sheets_db.get_sessions(MAX_SESSIONS)
+            sheet_sessions = sheets_db.get_sessions(user_id, MAX_SESSIONS)
             
             sessions = []
             for session in sheet_sessions:
                 # Get the first user message for preview
-                messages = sheets_db.get_session_messages(session["session_id"])
+                messages = sheets_db.get_session_messages(user_id, session["session_id"])
                 preview = ""
                 for msg in messages:
                     if msg["role"] == "user":
@@ -1420,11 +1495,13 @@ async def calculate_roi(
     """Calculate Return on Investment (ROI)"""
     try:
         roi = (net_profit - initial_investment) / initial_investment * 100
-        annual_roi = roi / investment_period
+        # Handle None case for investment_period
+        period = investment_period if investment_period is not None else 1
+        annual_roi = roi / period
         return {
             "roi": round(roi, 2),
             "annual_roi": round(annual_roi, 2),
-            "investment_period": investment_period,
+            "investment_period": period,
             "initial_investment": initial_investment,
             "net_profit": net_profit
         }
