@@ -558,6 +558,46 @@ class ContentRequest(BaseModel):
     tone: str = "professional"
     length: str = "medium"  # "short", "medium", "long"
 
+class PricingStrategyRequest(BaseModel):
+    product: str
+    industry: str
+    target_market: str
+    costs: Optional[str] = None
+    competitors: Optional[str] = None
+
+class SWOTAnalysisRequest(BaseModel):
+    business: str
+    industry: str
+    stage: str
+    context: Optional[str] = None
+
+class BusinessPlanRequest(BaseModel):
+    business: str
+    industry: str
+    concept: str
+    funding: Optional[str] = None
+    timeline: Optional[str] = None
+
+class MarketResearchRequest(BaseModel):
+    product: str
+    industry: str
+    target_market: str
+    geography: Optional[str] = None
+    questions: Optional[str] = None
+
+class GoalTrackerRequest(BaseModel):
+    business: str
+    category: str
+    description: str
+    timeline: str
+    metrics: Optional[str] = None
+
+class RiskAssessmentRequest(BaseModel):
+    business: str
+    industry: str
+    stage: str
+    context: Optional[str] = None
+
 class FinancialData(BaseModel):
     data_type: str  # "cash_flow", "profit_loss", "balance_sheet", "metrics"
     data: Dict[str, Union[float, List[float]]]
@@ -1595,3 +1635,321 @@ async def calculate_cash_burn(
     except Exception as e:
         logging.error(f"Error calculating cash burn: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calculating cash burn: {str(e)}")
+
+# New Business Tools Endpoints
+
+@app.post("/generate/pricing-strategy")
+async def generate_pricing_strategy(
+    product: str = Form(...),
+    industry: str = Form(...),
+    target_market: str = Form(...),
+    costs: Optional[str] = Form(None),
+    competitors: Optional[str] = Form(None),
+    user_id: str = Form(...)
+):
+    """Generate a comprehensive pricing strategy"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
+    try:
+        prompt = f"""
+        Generate a comprehensive pricing strategy for {product} in the {industry} industry.
+        
+        Target Market: {target_market}
+        {f"Estimated Costs: {costs}" if costs else ""}
+        {f"Competitor Prices: {competitors}" if competitors else ""}
+        
+        Include:
+        1. Pricing model recommendations (subscription, one-time, freemium, etc.)
+        2. Price point analysis and justification
+        3. Competitive positioning
+        4. Value proposition alignment
+        5. Pricing psychology considerations
+        6. Implementation timeline
+        7. Testing and optimization strategies
+        """
+        
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a pricing strategy expert with deep knowledge of pricing psychology, competitive analysis, and business models."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        )
+        strategy = response.choices[0].message.content
+        return {"strategy": strategy}
+    except Exception as e:
+        logging.error(f"Error generating pricing strategy: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating pricing strategy: {str(e)}")
+
+@app.post("/generate/swot-analysis")
+async def generate_swot_analysis(
+    business: str = Form(...),
+    industry: str = Form(...),
+    stage: str = Form(...),
+    context: Optional[str] = Form(None),
+    user_id: str = Form(...)
+):
+    """Generate a comprehensive SWOT analysis"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
+    try:
+        prompt = f"""
+        Generate a comprehensive SWOT analysis for {business} in the {industry} industry.
+        
+        Business Stage: {stage}
+        {f"Additional Context: {context}" if context else ""}
+        
+        Provide detailed analysis for each category:
+        
+        STRENGTHS:
+        - Internal positive factors
+        - Competitive advantages
+        - Unique capabilities
+        
+        WEAKNESSES:
+        - Internal limitations
+        - Areas for improvement
+        - Resource constraints
+        
+        OPPORTUNITIES:
+        - External positive factors
+        - Market trends
+        - Growth potential
+        
+        THREATS:
+        - External challenges
+        - Competitive risks
+        - Market threats
+        
+        Include actionable insights and recommendations for each category.
+        """
+        
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a strategic business analyst expert in SWOT analysis and strategic planning."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        )
+        analysis = response.choices[0].message.content
+        return {"analysis": analysis}
+    except Exception as e:
+        logging.error(f"Error generating SWOT analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating SWOT analysis: {str(e)}")
+
+@app.post("/generate/business-plan")
+async def generate_business_plan(
+    business: str = Form(...),
+    industry: str = Form(...),
+    concept: str = Form(...),
+    funding: Optional[str] = Form(None),
+    timeline: Optional[str] = Form(None),
+    user_id: str = Form(...)
+):
+    """Generate a comprehensive business plan"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
+    try:
+        prompt = f"""
+        Generate a comprehensive business plan for {business} in the {industry} industry.
+        
+        Business Concept: {concept}
+        {f"Funding Needs: {funding}" if funding else ""}
+        {f"Timeline: {timeline}" if timeline else ""}
+        
+        Include the following sections:
+        
+        1. EXECUTIVE SUMMARY
+        2. BUSINESS DESCRIPTION
+        3. MARKET ANALYSIS
+        4. COMPETITIVE ANALYSIS
+        5. MARKETING STRATEGY
+        6. OPERATIONS PLAN
+        7. FINANCIAL PROJECTIONS
+        8. RISK ANALYSIS
+        9. IMPLEMENTATION TIMELINE
+        10. APPENDICES
+        
+        Make it comprehensive, professional, and investor-ready.
+        """
+        
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a business plan expert with experience in startup consulting and investor relations."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        )
+        plan = response.choices[0].message.content
+        return {"plan": plan}
+    except Exception as e:
+        logging.error(f"Error generating business plan: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating business plan: {str(e)}")
+
+@app.post("/generate/market-research")
+async def generate_market_research(
+    product: str = Form(...),
+    industry: str = Form(...),
+    target_market: str = Form(...),
+    geography: Optional[str] = Form(None),
+    questions: Optional[str] = Form(None),
+    user_id: str = Form(...)
+):
+    """Generate comprehensive market research"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
+    try:
+        prompt = f"""
+        Generate comprehensive market research for {product} in the {industry} industry.
+        
+        Target Market: {target_market}
+        {f"Geographic Focus: {geography}" if geography else ""}
+        {f"Specific Research Questions: {questions}" if questions else ""}
+        
+        Include the following sections:
+        
+        1. MARKET OVERVIEW
+        2. TARGET MARKET ANALYSIS
+        3. COMPETITIVE LANDSCAPE
+        4. MARKET SIZE AND GROWTH
+        5. CUSTOMER SEGMENTATION
+        6. MARKET TRENDS
+        7. BARRIERS TO ENTRY
+        8. OPPORTUNITIES AND THREATS
+        9. RECOMMENDATIONS
+        10. DATA SOURCES AND METHODOLOGY
+        
+        Provide actionable insights and data-driven recommendations.
+        """
+        
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a market research expert with deep knowledge of industry analysis and consumer behavior."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        )
+        research = response.choices[0].message.content
+        return {"research": research}
+    except Exception as e:
+        logging.error(f"Error generating market research: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating market research: {str(e)}")
+
+@app.post("/generate/goal-tracker")
+async def generate_goal_tracker(
+    business: str = Form(...),
+    category: str = Form(...),
+    description: str = Form(...),
+    timeline: str = Form(...),
+    metrics: Optional[str] = Form(None),
+    user_id: str = Form(...)
+):
+    """Generate a goal tracking plan"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
+    try:
+        prompt = f"""
+        Generate a comprehensive goal tracking plan for {business}.
+        
+        Goal Category: {category}
+        Goal Description: {description}
+        Timeline: {timeline}
+        {f"Key Metrics: {metrics}" if metrics else ""}
+        
+        Include the following:
+        
+        1. GOAL BREAKDOWN
+        2. KEY MILESTONES
+        3. SUCCESS METRICS
+        4. ACTION PLAN
+        5. PROGRESS TRACKING METHODS
+        6. RISK MITIGATION
+        7. ACCOUNTABILITY MEASURES
+        8. REVIEW AND ADJUSTMENT PROCESS
+        
+        Make it actionable with specific, measurable, achievable, relevant, and time-bound (SMART) goals.
+        """
+        
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a business performance expert specializing in goal setting, tracking, and achievement."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        )
+        plan = response.choices[0].message.content
+        return {"plan": plan}
+    except Exception as e:
+        logging.error(f"Error generating goal tracker: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating goal tracker: {str(e)}")
+
+@app.post("/generate/risk-assessment")
+async def generate_risk_assessment(
+    business: str = Form(...),
+    industry: str = Form(...),
+    stage: str = Form(...),
+    context: Optional[str] = Form(None),
+    user_id: str = Form(...)
+):
+    """Generate a comprehensive risk assessment"""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+        
+    try:
+        prompt = f"""
+        Generate a comprehensive risk assessment for {business} in the {industry} industry.
+        
+        Business Stage: {stage}
+        {f"Business Context: {context}" if context else ""}
+        
+        Include the following sections:
+        
+        1. RISK IDENTIFICATION
+        2. RISK CATEGORIZATION
+        3. RISK ANALYSIS (Probability & Impact)
+        4. RISK PRIORITIZATION
+        5. MITIGATION STRATEGIES
+        6. CONTINGENCY PLANS
+        7. MONITORING AND REVIEW
+        8. RISK OWNERSHIP
+        9. ESCALATION PROCEDURES
+        10. DOCUMENTATION REQUIREMENTS
+        
+        Provide practical mitigation strategies and contingency plans for each identified risk.
+        """
+        
+        response = await asyncio.to_thread(
+            lambda: openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a risk management expert with experience in business continuity and strategic risk assessment."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        )
+        assessment = response.choices[0].message.content
+        return {"assessment": assessment}
+    except Exception as e:
+        logging.error(f"Error generating risk assessment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating risk assessment: {str(e)}")
